@@ -54,8 +54,11 @@ import java.io.StringWriter;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -65,7 +68,7 @@ import de.dknapps.mybatter.tokenizer.Tokenizer;
 
 /**
  * Format a MyBatis mapper input string into a well-formatted string.
- * 
+ *
  * <pre>
  *     TODO Use in-memory database to verify sql statements in mapper xml are valid
  *     TODO Use stack for indentions:
@@ -191,8 +194,9 @@ public class Formatter {
 
 		// Write every token in a formatted way to the output
 		Token previousToken = null;
-		for (Token token : tokenList) {
-			write(deriveEffectiveBeforeFormat(token, previousToken));
+		for (int i = 0; i < tokenList.size(); i++) {
+			Token token = tokenList.get(i);
+			write(deriveEffectiveBeforeFormat(token, previousToken, tokenList, i));
 			write(token);
 			previousToken = token;
 		}
@@ -205,14 +209,48 @@ public class Formatter {
 	 * Join formats of one token or two consecutive tokens into one by aggregation of their linefeeds and
 	 * indentions or by just using one of them without aggregation (in case of prefixes or suffixes). The
 	 * result is the effective format *before* the current token.
-	 * 
+	 *
 	 * @param token
 	 *            The current token.
 	 * @param previousToken
 	 *            The previous token.
 	 * @return The format to be written *before* writing the current token.
 	 */
-	private Format deriveEffectiveBeforeFormat(Token token, Token previousToken) {
+	private Set<String> set = new HashSet<String>() {
+		{
+			add("count");
+			add("max");
+			add("min");
+		}
+	};
+	private Format deriveEffectiveBeforeFormat(Token token, Token previousToken, List<Token> tokenList, int currentIndex) {
+		if (token.getTokenType() == CLOSING_PARENTHESIS && previousToken!=null && previousToken.getTokenType() == OPENING_PARENTHESIS) {
+			return CLOSE_BY;
+		}
+		if (token.getTokenType() == COMMA && previousToken!=null && previousToken.getTokenType() == CLOSING_PARENTHESIS) {
+			return CLOSE_BY;
+		}
+		/*
+		 * fix
+		 * select count (1) from t1
+		 */
+
+		if (previousToken != null &&  previousToken.getTokenType() == OPENING_PARENTHESIS) {
+			if (currentIndex >= 2) {
+				Token tk = tokenList.get(currentIndex - 2);
+				if(tk.tokenName() != null && (set.contains(tk.tokenName().toLowerCase(Locale.ROOT)))) {
+					return CLOSE_BY;
+				}
+			}
+		}
+		if (token.getTokenType() == CLOSING_PARENTHESIS) {
+			if (currentIndex >= 3) {
+				Token tk = tokenList.get(currentIndex - 3);
+				if(tk.tokenName() != null && set.contains(tk.tokenName().toLowerCase())) {
+					return CLOSE_BY;
+				}
+			}
+		}
 		Format beforeFormat;
 		TokenType tokenType = token.getTokenType();
 		beforeFormat = retrieveBeforeFormat(tokenType);
@@ -226,7 +264,21 @@ public class Formatter {
 			} else if (previousTokenType == SQL_SUB_STATEMENT_PREFIX) {
 				beforeFormat = SPACE;
 			} else {
-				beforeFormat = joinFormats(previousAfterFormat, beforeFormat);
+				if (token.getTokenType() == CLOSING_XML_TAG && (previousToken.getTokenType()==TERM || previousToken.getTokenType() == CLOSING_PARENTHESIS)) {
+					int indent = 0;
+					for (int i = currentIndex -1; i >= 0; i--) {
+						Token tk = tokenList.get(i);
+						Format formatBeforeTk = retrieveBeforeFormat(tk.getTokenType());
+						Format formatAfterTk = retrieveAfterFormat(tk.getTokenType());
+						indent += (formatBeforeTk.getIndentionDelta() + formatAfterTk.getIndentionDelta());
+						if (tk.getTokenType() == XML_TAG) {
+							break;
+						}
+					}
+					beforeFormat =  new Format(1,  -1 * indent, 0);
+				} else {
+					beforeFormat = joinFormats(previousAfterFormat, beforeFormat);
+				}
 			}
 		}
 		return beforeFormat;
@@ -235,7 +287,7 @@ public class Formatter {
 	/**
 	 * Returns true if the token type is one of those that allows sql comments on the same line for tokens of
 	 * this type.
-	 * 
+	 *
 	 * @param tokenType
 	 *            The token type.
 	 * @return True for token types that allow comments on same line.
@@ -254,7 +306,7 @@ public class Formatter {
 
 	/**
 	 * Retrieve formatting information to be applied before writing this token.
-	 * 
+	 *
 	 * @param token
 	 *            The token type to get formatting information for.
 	 */
@@ -264,7 +316,7 @@ public class Formatter {
 
 	/**
 	 * Retrieve formatting information to be applied after writing this token.
-	 * 
+	 *
 	 * @param token
 	 *            The token type to get formatting information for.
 	 */
@@ -274,7 +326,7 @@ public class Formatter {
 
 	/**
 	 * Join two consecutive formats into one by aggregating their linefeeds and indentions.
-	 * 
+	 *
 	 * @param first
 	 *            The first format.
 	 * @param second
@@ -302,7 +354,7 @@ public class Formatter {
 
 	/**
 	 * Writes linefeeds and indentions to the output.
-	 * 
+	 *
 	 * @param token
 	 *            The format to be written.
 	 * @return
@@ -323,7 +375,7 @@ public class Formatter {
 
 	/**
 	 * Writes a token in a formatted way to the output.
-	 * 
+	 *
 	 * @param token
 	 *            The token to be written.
 	 * @return
@@ -341,7 +393,7 @@ public class Formatter {
 
 	/**
 	 * Writes a string to the output and increase lineLine accordingly.
-	 * 
+	 *
 	 * @param string
 	 *            String to be written
 	 */
