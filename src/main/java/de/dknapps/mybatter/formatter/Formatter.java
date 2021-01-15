@@ -52,6 +52,7 @@ import static de.dknapps.mybatter.tokenizer.TokenType.XML_TAG;
 
 import java.io.StringWriter;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -134,7 +135,7 @@ public class Formatter {
 		addFormats(SQL_COMMENT, new Format(0, 0, 1), new Format(1, 0, 0));
 		addFormats(COMMA, new Format(0, 0, 0), new Format(1, 0, 0));
 		addFormats(DOT, CLOSE_BY, CLOSE_BY);
-		addFormats(OPENING_PARENTHESIS, new Format(0, 0, 1), new Format(1, 1, 0));
+        addFormats(OPENING_PARENTHESIS, new Format(0, 0, 0), new Format(1, 1, 0));
 		addFormats(CLOSING_PARENTHESIS, new Format(1, -1, 0), new Format(1, 0, 1));
 		addFormats(TERM, SPACE, SPACE);
 
@@ -163,7 +164,7 @@ public class Formatter {
 
 		addFormats(SQL_STATEMENT_SUFFIX, SPACE, retrieveAfterFormat(SQL_STATEMENT));
 		addFormats(SQL_SUB_STATEMENT_PREFIX, retrieveBeforeFormat(SQL_SUB_STATEMENT), SPACE);
-		addFormats(SQL_SUB_STATEMENT_SUFFIX, SPACE, retrieveAfterFormat(SQL_SUB_STATEMENT));
+        addFormats(SQL_SUB_STATEMENT_SUFFIX, SPACE, SPACE);
 	}
 
 	/**
@@ -194,9 +195,12 @@ public class Formatter {
 
 		// Write every token in a formatted way to the output
 		Token previousToken = null;
+        Format[] formatList = new Format[tokenList.size()];
 		for (int i = 0; i < tokenList.size(); i++) {
 			Token token = tokenList.get(i);
-			write(deriveEffectiveBeforeFormat(token, previousToken, tokenList, i));
+            Format format = deriveEffectiveBeforeFormat(token, previousToken, tokenList, i, formatList);
+            formatList[i] = format;
+            write(format);
 			write(token);
 			previousToken = token;
 		}
@@ -223,37 +227,98 @@ public class Formatter {
 			add("min");
 		}
 	};
-	private Format deriveEffectiveBeforeFormat(Token token, Token previousToken, List<Token> tokenList, int currentIndex) {
-		if (token.getTokenType() == CLOSING_PARENTHESIS && previousToken!=null && previousToken.getTokenType() == OPENING_PARENTHESIS) {
+
+    private Format deriveEffectiveBeforeFormat(Token token, Token previousToken, List<Token> tokenList,
+                                               int currentIndex, Format[] formats) {
+
+        Format beforeFormat;
+        TokenType tokenType = token.getTokenType();
+        beforeFormat = retrieveBeforeFormat(tokenType);
+
+        if (token.getTokenType() == CLOSING_PARENTHESIS && previousToken != null && previousToken.getTokenType() == OPENING_PARENTHESIS) {
 			return CLOSE_BY;
 		}
-		if (token.getTokenType() == COMMA && previousToken!=null && previousToken.getTokenType() == CLOSING_PARENTHESIS) {
+        if (token.getTokenType() == COMMA && previousToken != null && previousToken.getTokenType() == CLOSING_PARENTHESIS) {
 			return CLOSE_BY;
 		}
 		/*
 		 * fix
-		 * select count (1) from t1
+         * select count(1) from t1
 		 */
-
-		if (previousToken != null &&  previousToken.getTokenType() == OPENING_PARENTHESIS) {
+        if (previousToken != null && previousToken.getTokenType() == OPENING_PARENTHESIS) {
 			if (currentIndex >= 2) {
 				Token tk = tokenList.get(currentIndex - 2);
-				if(tk.tokenName() != null && (set.contains(tk.tokenName().toLowerCase(Locale.ROOT)))) {
+                if (tk.tokenName() != null && (set.contains(tk.tokenName().toLowerCase(Locale.ROOT)))) {
 					return CLOSE_BY;
 				}
 			}
 		}
 		if (token.getTokenType() == CLOSING_PARENTHESIS) {
-			if (currentIndex >= 3) {
-				Token tk = tokenList.get(currentIndex - 3);
-				if(tk.tokenName() != null && set.contains(tk.tokenName().toLowerCase())) {
-					return CLOSE_BY;
+			for (int i = currentIndex - 1; i >= 0; i--) {
+				Token tk = tokenList.get(i);
+				if (tk.getTokenType().equals(OPENING_PARENTHESIS)) {
+					if (i >= 1) {
+						if (set.contains(tokenList.get(i - 1).tokenName().toLowerCase())) {
+							return CLOSE_BY;
+						}
+					}
+					break;
 				}
 			}
 		}
-		Format beforeFormat;
-		TokenType tokenType = token.getTokenType();
-		beforeFormat = retrieveBeforeFormat(tokenType);
+
+		/*
+		 * fix  limit xxx , offset xxx
+		 */
+		// offset 不换号
+		if (currentIndex >= 3) {
+			if (tokenList.get(currentIndex - 1).getTokenType() == COMMA && "limit".equals(tokenList.get(currentIndex - 3).tokenName())) {
+				return new Format(0, 0, 1);
+			}
+		}
+		// limit 对齐到 where
+		if ("limit".equalsIgnoreCase(token.tokenName()) && token.getTokenType().equals(TERM)) {
+			int indent = 0;
+			for (int i = currentIndex - 1; i >= 0; i--) {
+				Token tk = tokenList.get(i);
+				if (tk.getTokenType() == SQL_SUB_STATEMENT && "where".equalsIgnoreCase(tk.tokenName())) {
+					break;
+				}
+				indent += formats[i].getIndentionDelta();
+			}
+			beforeFormat = new Format(1, -1 * indent, 0);
+			return beforeFormat;
+		}
+
+		// on duplicate key
+		if ("duplicate".equalsIgnoreCase(token.tokenName())) {
+			if (currentIndex > 1 && "on".equals(tokenList.get(currentIndex - 1).tokenName())) {
+				return new Format(0, 0, 1);
+			}
+		}
+
+//		// SELECT count(distinct id)
+		if (currentIndex > 1  && "distinct".equalsIgnoreCase(tokenList.get(currentIndex - 1).tokenName())
+				&& OPENING_PARENTHESIS.equals(tokenList.get(currentIndex-2).getTokenType())) {
+			return new Format(0, 0, 1);
+		}
+
+		// on duplicate key
+		if ("update".equalsIgnoreCase(token.tokenName())) {
+			if (currentIndex > 3 && "key".equals(tokenList.get(currentIndex - 1).tokenName())
+					&& "duplicate".equalsIgnoreCase(tokenList.get(currentIndex - 2).tokenName())
+					&& "on".equalsIgnoreCase(tokenList.get(currentIndex - 3).tokenName())
+			) {
+				return new Format(0, 0, 1);
+			}
+		}
+		// on duplicate key
+		if ("ignore".equalsIgnoreCase(token.tokenName())) {
+			if (currentIndex > 1 && "insert".equals(tokenList.get(currentIndex - 1).tokenName())) {
+				return new Format(0, 0, 1);
+			}
+		}
+
 		if (previousToken != null) {
 			TokenType previousTokenType = previousToken.getTokenType();
 			Format previousAfterFormat = retrieveAfterFormat(previousTokenType);
@@ -264,18 +329,16 @@ public class Formatter {
 			} else if (previousTokenType == SQL_SUB_STATEMENT_PREFIX) {
 				beforeFormat = SPACE;
 			} else {
-				if (token.getTokenType() == CLOSING_XML_TAG && (previousToken.getTokenType()==TERM || previousToken.getTokenType() == CLOSING_PARENTHESIS)) {
+                if (token.getTokenType() == CLOSING_XML_TAG ) {
 					int indent = 0;
-					for (int i = currentIndex -1; i >= 0; i--) {
+                    for (int i = currentIndex - 1; i >= 0; i--) {
 						Token tk = tokenList.get(i);
-						Format formatBeforeTk = retrieveBeforeFormat(tk.getTokenType());
-						Format formatAfterTk = retrieveAfterFormat(tk.getTokenType());
-						indent += (formatBeforeTk.getIndentionDelta() + formatAfterTk.getIndentionDelta());
-						if (tk.getTokenType() == XML_TAG) {
+                        if (tk.getTokenType() == XML_TAG && tk.tokenName().equals(token.tokenName())) {
 							break;
 						}
+                        indent += formats[i].getIndentionDelta();
 					}
-					beforeFormat =  new Format(1,  -1 * indent, 0);
+                    beforeFormat = new Format(1, -1 * indent, 0);
 				} else {
 					beforeFormat = joinFormats(previousAfterFormat, beforeFormat);
 				}
